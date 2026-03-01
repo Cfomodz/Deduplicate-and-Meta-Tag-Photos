@@ -16,6 +16,7 @@ NO_DUPLICATES=false
 FILTER_JPG=false
 FILTER_PNG=false
 NO_ZIP=false
+DEPTH=3
 
 # Counters
 SCANNED=0
@@ -44,6 +45,10 @@ Options:
                        Requires --output.
   --move               Move files instead of copying (destructive, prompts first).
   --dry-run            Preview actions without making any changes.
+  --depth <1|2|3>      Number of date folder layers in the output directory.
+                         3 (default) = YYYY/MM/DD/photo.jpg
+                         2           = YYYY/MM/photo.jpg
+                         1           = YYYY/photo.jpg
   --no-zip             Skip scanning inside ZIP archives for images.
   --help               Show this message and exit.
 
@@ -100,6 +105,7 @@ while [[ $# -gt 0 ]]; do
     --png)            FILTER_PNG=true;      shift   ;;
     --no-duplicates)  NO_DUPLICATES=true;   shift   ;;
     --no-zip)         NO_ZIP=true;          shift   ;;
+    --depth)          DEPTH="$2";           shift 2 ;;
     --move)           MOVE=true;            shift   ;;
     --dry-run)        DRY_RUN=true;         shift   ;;
     --help|-h)        usage; exit 0                 ;;
@@ -110,6 +116,11 @@ done
 # ─── Validation ───────────────────────────────────────────────────────────────
 if $NO_DUPLICATES && [[ -z "$OUTPUT" ]]; then
   echo "Error: --no-duplicates requires --output." >&2
+  exit 1
+fi
+
+if [[ "$DEPTH" != "1" && "$DEPTH" != "2" && "$DEPTH" != "3" ]]; then
+  echo "Error: --depth must be 1, 2, or 3 (got '$DEPTH')." >&2
   exit 1
 fi
 
@@ -182,6 +193,18 @@ is_image_extension() {
   return 1
 }
 
+# ─── Destination directory helper ─────────────────────────────────────────────
+# Builds the output subdirectory based on --depth.
+#   build_dest_dir <base_output> <year> <month> <day>
+build_dest_dir() {
+  local base="$1" y="$2" m="$3" d="$4"
+  case "$DEPTH" in
+    1) echo "${base}/${y}" ;;
+    2) echo "${base}/${y}/${m}" ;;
+    3) echo "${base}/${y}/${m}/${d}" ;;
+  esac
+}
+
 # ─── SHA-256 helper ───────────────────────────────────────────────────────────
 sha256_file() {
   if command -v sha256sum &>/dev/null; then
@@ -219,10 +242,15 @@ get_date_parts() {
 # ─── Build dedup hash index ───────────────────────────────────────────────────
 if $NO_DUPLICATES && [[ -n "$OUTPUT" ]] && [[ -d "$OUTPUT" ]]; then
   echo "Building hash index of existing files in: $OUTPUT"
+  INDEX_COUNT=0
   # Temporarily allow null-separated find without set -e problems
   while IFS= read -r -d '' existing; do
     hash=$(sha256_file "$existing" 2>/dev/null) || continue
     HASH_INDEX["$hash"]=1
+    ((INDEX_COUNT++)) || true
+    if (( INDEX_COUNT % 100 == 0 )); then
+      echo "  [progress] Indexed $INDEX_COUNT files so far…"
+    fi
   done < <(
     eval "find $(printf '%q' "$OUTPUT") -type f \( $(
       first=true
@@ -273,6 +301,11 @@ while IFS= read -r -d '' file; do
     continue
   fi
 
+  # Progress: hashing
+  if (( SCANNED % 100 == 0 )); then
+    echo "  [progress] Scanned $SCANNED files (hashing: $file)…"
+  fi
+
   # Compute hash
   hash=$(sha256_file "$file" 2>/dev/null) || {
     echo "Error hashing: $file" >&2
@@ -303,7 +336,7 @@ while IFS= read -r -d '' file; do
   filename="$(basename "$file")"
   base="${filename%.*}"
   file_ext="${filename##*.}"
-  dest_dir="${OUTPUT}/${year}/${month}/${day}"
+  dest_dir=$(build_dest_dir "$OUTPUT" "$year" "$month" "$day")
   dest="${dest_dir}/${filename}"
 
   # Collision handling
@@ -334,6 +367,11 @@ while IFS= read -r -d '' file; do
         echo "Error copying: $file" >&2
         ((ERRORS++)) || true
       fi
+    fi
+    # Progress: copying/moving
+    if (( COPIED % 10 == 0 && COPIED > 0 )); then
+      action_verb=$( $MOVE && echo "Moved" || echo "Copied" )
+      echo "  [progress] $action_verb $COPIED files so far…"
     fi
   fi
 
@@ -399,6 +437,11 @@ if ! $NO_ZIP && $HAVE_UNZIP; then
       ((SCANNED++)) || true
       ((ZIP_EXTRACTED++)) || true
 
+      # Progress: hashing (ZIP)
+      if (( SCANNED % 100 == 0 )); then
+        echo "  [progress] Scanned $SCANNED files (hashing ZIP entry: $entry)…"
+      fi
+
       # Compute hash
       hash=$(sha256_file "$extracted" 2>/dev/null) || {
         echo "Error hashing extracted: $entry (from $zipfile)" >&2
@@ -429,7 +472,7 @@ if ! $NO_ZIP && $HAVE_UNZIP; then
       filename="$(basename "$extracted")"
       base="${filename%.*}"
       file_ext="${filename##*.}"
-      dest_dir="${OUTPUT}/${year}/${month}/${day}"
+      dest_dir=$(build_dest_dir "$OUTPUT" "$year" "$month" "$day")
       dest="${dest_dir}/${filename}"
 
       # Collision handling
@@ -450,6 +493,10 @@ if ! $NO_ZIP && $HAVE_UNZIP; then
         else
           echo "Error copying extracted: $entry (from $zipfile)" >&2
           ((ERRORS++)) || true
+        fi
+        # Progress: copying (ZIP)
+        if (( COPIED % 10 == 0 && COPIED > 0 )); then
+          echo "  [progress] Copied $COPIED files so far…"
         fi
       fi
     done

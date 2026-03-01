@@ -36,6 +36,12 @@
 .PARAMETER DryRun
     Preview what would happen without making any changes.
 
+.PARAMETER Depth
+    Number of date-based folder layers in the output directory (1–3).
+      3 (default) = YYYY\MM\DD\photo.jpg
+      2           = YYYY\MM\photo.jpg
+      1           = YYYY\photo.jpg
+
 .PARAMETER NoZip
     Skip scanning inside ZIP archives for images. By default, any .zip files
     found during scanning are inspected for image files matching the current
@@ -67,6 +73,8 @@ param(
     [switch]$NoDuplicates,
     [switch]$Move,
     [switch]$DryRun,
+    [ValidateRange(1, 3)]
+    [int]$Depth = 3,
     [switch]$NoZip
 )
 
@@ -178,6 +186,16 @@ function Test-Extension {
     return $Extensions -contains $ext
 }
 
+# ─── Destination directory helper ─────────────────────────────────────────────
+function Get-DestDir {
+    param([string]$Base, [string]$Year, [string]$Month, [string]$Day)
+    switch ($Depth) {
+        1 { return Join-Path $Base $Year }
+        2 { return Join-Path $Base "$Year\$Month" }
+        3 { return Join-Path $Base "$Year\$Month\$Day" }
+    }
+}
+
 # ─── Build dedup hash index ───────────────────────────────────────────────────
 $HashIndex = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 
@@ -185,12 +203,17 @@ if ($NoDuplicates -and $OutputPath -and (Test-Path $OutputPath)) {
     Write-Host "Building hash index of existing files in: $OutputPath"
     $existing = Get-ChildItem -Path $OutputPath -Recurse -File -ErrorAction SilentlyContinue |
                 Where-Object { Test-Extension $_ }
+    $indexCount = 0
     foreach ($f in $existing) {
         try {
             $h = Get-FileSHA256 -Path $f.FullName
             [void]$HashIndex.Add($h)
         } catch {
             Write-Warning "Could not hash existing file: $($f.FullName)"
+        }
+        $indexCount++
+        if ($indexCount % 100 -eq 0) {
+            Write-Host "  [progress] Indexed $indexCount files so far…"
         }
     }
     Write-Host "  Indexed $($HashIndex.Count) existing file(s)."
@@ -232,6 +255,11 @@ foreach ($root in $ScanRoots) {
     foreach ($file in $files) {
         $Scanned++
 
+        # Progress: hashing
+        if ($Scanned % 100 -eq 0) {
+            Write-Host "  [progress] Scanned $Scanned files (hashing: $($file.FullName))…"
+        }
+
         # Hash
         $hash = $null
         try {
@@ -266,7 +294,7 @@ foreach ($root in $ScanRoots) {
         }
 
         # ── Resolve destination ───────────────────────────────────────────────
-        $destDir  = Join-Path $OutputPath "$year\$month\$day"
+        $destDir  = Get-DestDir -Base $OutputPath -Year $year -Month $month -Day $day
         $destFile = Join-Path $destDir $file.Name
         $base     = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
         $ext      = $file.Extension
@@ -291,6 +319,11 @@ foreach ($root in $ScanRoots) {
                 }
                 [void]$HashIndex.Add($hash)  # prevent self-duplication within this run
                 $Copied++
+                # Progress: copying/moving
+                if ($Copied % 10 -eq 0) {
+                    $actionVerb = if ($Move) { "Moved" } else { "Copied" }
+                    Write-Host "  [progress] $actionVerb $Copied files so far…"
+                }
             } catch {
                 Write-Warning "Error processing $($file.FullName): $_"
                 $Errors++
@@ -373,6 +406,11 @@ if (-not $NoZip) {
                         $Scanned++
                         $ZipExtracted++
 
+                        # Progress: hashing (ZIP)
+                        if ($Scanned % 100 -eq 0) {
+                            Write-Host "  [progress] Scanned $Scanned files (hashing ZIP entry: $($entry.FullName))…"
+                        }
+
                         # Hash
                         $hash = $null
                         try {
@@ -407,7 +445,7 @@ if (-not $NoZip) {
                         }
 
                         # ── Resolve destination ──────────────────────────────
-                        $destDir  = Join-Path $OutputPath "$year\$month\$day"
+                        $destDir  = Get-DestDir -Base $OutputPath -Year $year -Month $month -Day $day
                         $destFile = Join-Path $destDir $extractedFile.Name
                         $base     = [System.IO.Path]::GetFileNameWithoutExtension($extractedFile.Name)
                         $ext      = $extractedFile.Extension
@@ -428,6 +466,10 @@ if (-not $NoZip) {
                                 Copy-Item -Path $extractedFile.FullName -Destination $destFile -ErrorAction Stop
                                 [void]$HashIndex.Add($hash)
                                 $Copied++
+                                # Progress: copying (ZIP)
+                                if ($Copied % 10 -eq 0) {
+                                    Write-Host "  [progress] Copied $Copied files so far…"
+                                }
                             } catch {
                                 Write-Warning "Error copying extracted: $($entry.FullName) (from $($zipFile.FullName)): $_"
                                 $Errors++
