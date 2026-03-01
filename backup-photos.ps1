@@ -36,6 +36,11 @@
 .PARAMETER DryRun
     Preview what would happen without making any changes.
 
+.PARAMETER NoZip
+    Skip scanning inside ZIP archives for images. By default, any .zip files
+    found during scanning are inspected for image files matching the current
+    extension filter. Only matching images are extracted temporarily and processed.
+
 .EXAMPLE
     .\backup-photos.ps1 -OutputPath D:\Backup
 
@@ -61,7 +66,8 @@ param(
     [switch]$Png,
     [switch]$NoDuplicates,
     [switch]$Move,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$NoZip
 )
 
 Set-StrictMode -Version Latest
@@ -201,10 +207,12 @@ $ScanRoots = if ($Source) {
 }
 
 # ─── Counters ─────────────────────────────────────────────────────────────────
-$Scanned = 0
-$Skipped = 0
-$Copied  = 0
-$Errors  = 0
+$Scanned      = 0
+$Skipped      = 0
+$Copied       = 0
+$Errors       = 0
+$ZipArchives  = 0
+$ZipExtracted = 0
 
 # ─── Report mode header ───────────────────────────────────────────────────────
 if (-not $OutputPath) {
@@ -291,12 +299,165 @@ foreach ($root in $ScanRoots) {
     }
 }
 
+# ─── ZIP archive scan ───────────────────────────────────────────────────────
+if (-not $NoZip) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+
+    Write-Host ""
+    Write-Host "Scanning ZIP archives for images…"
+
+    $zipTmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "backup-photos-zip-$PID"
+    if (-not (Test-Path $zipTmpDir)) {
+        New-Item -ItemType Directory -Path $zipTmpDir -Force | Out-Null
+    }
+
+    try {
+        foreach ($root in $ScanRoots) {
+            $zipFiles = Get-ChildItem -Path $root -Recurse -File -Filter '*.zip' -ErrorAction SilentlyContinue |
+                        Where-Object {
+                            -not $OutputPath -or
+                            -not $_.FullName.StartsWith($OutputPath, [StringComparison]::OrdinalIgnoreCase)
+                        }
+
+            foreach ($zipFile in $zipFiles) {
+                try {
+                    $archive = [System.IO.Compression.ZipFile]::OpenRead($zipFile.FullName)
+                } catch {
+                    Write-Warning "Cannot open ZIP: $($zipFile.FullName): $_"
+                    $Errors++
+                    continue
+                }
+
+                try {
+                    # Filter entries for image files
+                    $imageEntries = $archive.Entries | Where-Object {
+                        $_.Name -ne '' -and  # skip directory entries
+                        $Extensions -contains ($_.Name.Split('.')[-1].ToLower())
+                    }
+
+                    if (-not $imageEntries -or @($imageEntries).Count -eq 0) {
+                        continue
+                    }
+
+                    $ZipArchives++
+                    $entryCount = @($imageEntries).Count
+                    Write-Host "  Found $entryCount image(s) in: $($zipFile.FullName)"
+
+                    # Per-ZIP extraction subdirectory
+                    $zipExtractDir = Join-Path $zipTmpDir "$($zipFile.BaseName)_${ZipArchives}"
+                    if (-not (Test-Path $zipExtractDir)) {
+                        New-Item -ItemType Directory -Path $zipExtractDir -Force | Out-Null
+                    }
+
+                    foreach ($entry in $imageEntries) {
+                        try {
+                            # Build extraction path preserving structure
+                            $entryRelPath = $entry.FullName -replace '/', '\'
+                            $extractPath  = Join-Path $zipExtractDir $entryRelPath
+                            $extractDir   = Split-Path $extractPath -Parent
+
+                            if (-not (Test-Path $extractDir)) {
+                                New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+                            }
+
+                            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $extractPath, $true)
+                        } catch {
+                            Write-Warning "Error extracting '$($entry.FullName)' from $($zipFile.FullName): $_"
+                            $Errors++
+                            continue
+                        }
+
+                        if (-not (Test-Path $extractPath)) { continue }
+
+                        $extractedFile = Get-Item $extractPath
+                        $Scanned++
+                        $ZipExtracted++
+
+                        # Hash
+                        $hash = $null
+                        try {
+                            $hash = Get-FileSHA256 -Path $extractedFile.FullName
+                        } catch {
+                            Write-Warning "Cannot hash extracted: $($entry.FullName) (from $($zipFile.FullName))"
+                            $Errors++
+                            continue
+                        }
+
+                        # Dedup check
+                        if ($NoDuplicates -and $HashIndex.Contains($hash)) {
+                            $Skipped++
+                            continue
+                        }
+
+                        # Date
+                        $dateParts = Get-PhotoDate -File $extractedFile
+                        $year  = $dateParts.Year
+                        $month = $dateParts.Month
+                        $day   = $dateParts.Day
+
+                        # ── Report mode ──────────────────────────────────────
+                        if (-not $OutputPath) {
+                            $sizeKB = "{0:N0} KB" -f ($extractedFile.Length / 1KB)
+                            Write-Host ("{0,-80} {1,-8} {2,-12} {3}" -f `
+                                "[ZIP] $($zipFile.FullName)/$($entry.FullName)",
+                                $extractedFile.Extension.TrimStart('.').ToLower(),
+                                "${year}-${month}-${day}",
+                                $sizeKB)
+                            continue
+                        }
+
+                        # ── Resolve destination ──────────────────────────────
+                        $destDir  = Join-Path $OutputPath "$year\$month\$day"
+                        $destFile = Join-Path $destDir $extractedFile.Name
+                        $base     = [System.IO.Path]::GetFileNameWithoutExtension($extractedFile.Name)
+                        $ext      = $extractedFile.Extension
+                        $counter  = 1
+                        while (Test-Path $destFile) {
+                            $destFile = Join-Path $destDir "${base}_${counter}${ext}"
+                            $counter++
+                        }
+
+                        if ($DryRun) {
+                            Write-Host "[DRY-RUN] [ZIP] $($zipFile.FullName)/$($entry.FullName)"
+                            Write-Host "       -> $destFile"
+                        } else {
+                            try {
+                                if (-not (Test-Path $destDir)) {
+                                    New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+                                }
+                                Copy-Item -Path $extractedFile.FullName -Destination $destFile -ErrorAction Stop
+                                [void]$HashIndex.Add($hash)
+                                $Copied++
+                            } catch {
+                                Write-Warning "Error copying extracted: $($entry.FullName) (from $($zipFile.FullName)): $_"
+                                $Errors++
+                            }
+                        }
+                    }
+
+                    # Clean up per-ZIP extraction
+                    Remove-Item -Path $zipExtractDir -Recurse -Force -ErrorAction SilentlyContinue
+                } finally {
+                    $archive.Dispose()
+                }
+            }
+        }
+    } finally {
+        # Clean up temp directory
+        Remove-Item -Path $zipTmpDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # ─── Summary ──────────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "────────────────────────────────────────"
 Write-Host " Summary"
 Write-Host "────────────────────────────────────────"
 Write-Host "  Scanned              : $Scanned"
+if ($ZipArchives -gt 0) {
+    Write-Host "  ZIP archives scanned : $ZipArchives"
+    Write-Host "  Images from ZIPs     : $ZipExtracted"
+}
 Write-Host "  Skipped (duplicates) : $Skipped"
 if ($DryRun) {
     Write-Host "  Would copy/move      : $($Scanned - $Skipped - $Errors)"
