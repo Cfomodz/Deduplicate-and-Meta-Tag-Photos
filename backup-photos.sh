@@ -16,6 +16,7 @@ NO_DUPLICATES=false
 FILTER_JPG=false
 FILTER_PNG=false
 NO_ZIP=false
+ZIP_ONLY=false
 DEPTH=3
 
 # Counters
@@ -49,6 +50,8 @@ Options:
                          3 (default) = YYYY/MM/DD/photo.jpg
                          2           = YYYY/MM/photo.jpg
                          1           = YYYY/photo.jpg
+  --zip-only           Only scan inside ZIP archives; skip loose image files.
+                       Incompatible with --no-zip.
   --no-zip             Skip scanning inside ZIP archives for images.
   --help               Show this message and exit.
 
@@ -105,6 +108,7 @@ while [[ $# -gt 0 ]]; do
     --png)            FILTER_PNG=true;      shift   ;;
     --no-duplicates)  NO_DUPLICATES=true;   shift   ;;
     --no-zip)         NO_ZIP=true;          shift   ;;
+    --zip-only)       ZIP_ONLY=true;        shift   ;;
     --depth)          DEPTH="$2";           shift 2 ;;
     --move)           MOVE=true;            shift   ;;
     --dry-run)        DRY_RUN=true;         shift   ;;
@@ -116,6 +120,11 @@ done
 # ─── Validation ───────────────────────────────────────────────────────────────
 if $NO_DUPLICATES && [[ -z "$OUTPUT" ]]; then
   echo "Error: --no-duplicates requires --output." >&2
+  exit 1
+fi
+
+if $ZIP_ONLY && $NO_ZIP; then
+  echo "Error: --zip-only and --no-zip are incompatible." >&2
   exit 1
 fi
 
@@ -293,6 +302,10 @@ for ext in "${EXTENSIONS[@]}"; do
   fi
 done
 
+if $ZIP_ONLY; then
+  echo "Skipping loose image scan (--zip-only)."
+else
+
 while IFS= read -r -d '' file; do
   ((SCANNED++)) || true
 
@@ -381,8 +394,10 @@ done < <(
     -print0 2>/dev/null
 )
 
+fi  # end: skip main scan when --zip-only
+
 # ─── ZIP archive scan ───────────────────────────────────────────────────────
-if ! $NO_ZIP && $HAVE_UNZIP; then
+if (! $NO_ZIP || $ZIP_ONLY) && $HAVE_UNZIP; then
   echo ""
   echo "Scanning ZIP archives for images…"
 

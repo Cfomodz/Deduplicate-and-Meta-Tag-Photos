@@ -42,6 +42,10 @@
       2           = YYYY\MM\photo.jpg
       1           = YYYY\photo.jpg
 
+.PARAMETER ZipOnly
+    Only scan inside ZIP archives for images; skip loose image files on disk.
+    Incompatible with -NoZip.
+
 .PARAMETER NoZip
     Skip scanning inside ZIP archives for images. By default, any .zip files
     found during scanning are inspected for image files matching the current
@@ -75,6 +79,7 @@ param(
     [switch]$DryRun,
     [ValidateRange(1, 3)]
     [int]$Depth = 3,
+    [switch]$ZipOnly,
     [switch]$NoZip
 )
 
@@ -84,6 +89,11 @@ $ErrorActionPreference = 'Continue'
 # ─── Validation ───────────────────────────────────────────────────────────────
 if ($NoDuplicates -and -not $OutputPath) {
     Write-Error "-NoDuplicates requires -OutputPath."
+    exit 1
+}
+
+if ($ZipOnly -and $NoZip) {
+    Write-Error "-ZipOnly and -NoZip are incompatible."
     exit 1
 }
 
@@ -244,6 +254,9 @@ if (-not $OutputPath) {
 }
 
 # ─── Main scan loop ───────────────────────────────────────────────────────────
+if ($ZipOnly) {
+    Write-Host "Skipping loose image scan (-ZipOnly)."
+} else {
 foreach ($root in $ScanRoots) {
     $files = Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue |
              Where-Object {
@@ -331,9 +344,10 @@ foreach ($root in $ScanRoots) {
         }
     }
 }
+}  # end: skip main scan when -ZipOnly
 
 # ─── ZIP archive scan ───────────────────────────────────────────────────────
-if (-not $NoZip) {
+if (-not $NoZip -or $ZipOnly) {
     Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
 
     Write-Host ""
