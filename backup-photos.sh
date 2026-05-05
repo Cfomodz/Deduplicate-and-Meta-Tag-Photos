@@ -258,7 +258,11 @@ if [[ -z "$OUTPUT" ]]; then
 fi
 
 # ─── Prune paths to skip on default system-wide scan ─────────────────────────
-PRUNE_PATHS=(-not -path "*/proc/*" -not -path "*/sys/*" -not -path "*/dev/*" -not -path "*/run/*")
+# Use the standard ( ... ) -prune -o idiom so find stops descending into
+# pseudo-filesystems rather than just filtering their contents afterwards.
+# Absolute paths (/proc, /sys, /dev, /run) are intentional: they only trigger
+# when scanning from / and do not accidentally prune user dirs with these names.
+PRUNE_EXPR=(\( -path /proc -o -path /sys -o -path /dev -o -path /run \) -prune -o)
 
 # ─── Main scan loop ───────────────────────────────────────────────────────────
 # Build the find iname filter as a single -\( ... \) group
@@ -290,17 +294,19 @@ while IFS= read -r -d '' file; do
     continue
   fi
 
-  # Compute hash
-  hash=$(sha256_file "$file" 2>/dev/null) || {
-    echo "Error hashing: $file" >&2
-    ((ERRORS++)) || true
-    continue
-  }
+  # Compute hash and dedup check only when deduplication is enabled
+  hash=""
+  if $NO_DUPLICATES; then
+    hash=$(sha256_file "$file" 2>/dev/null) || {
+      echo "Error hashing: $file" >&2
+      ((ERRORS++)) || true
+      continue
+    }
 
-  # Dedup check
-  if $NO_DUPLICATES && [[ -n "${HASH_INDEX[$hash]+_}" ]]; then
-    ((SKIPPED++)) || true
-    continue
+    if [[ -n "${HASH_INDEX[$hash]+_}" ]]; then
+      ((SKIPPED++)) || true
+      continue
+    fi
   fi
 
   # Get date parts
@@ -337,7 +343,7 @@ while IFS= read -r -d '' file; do
     mkdir -p "$dest_dir"
     if $MOVE; then
       if mv "$file" "$dest" 2>/dev/null; then
-        HASH_INDEX["$hash"]=1
+        [[ -n "$hash" ]] && HASH_INDEX["$hash"]=1
         ((COPIED++)) || true
       else
         echo "Error moving: $file" >&2
@@ -345,7 +351,7 @@ while IFS= read -r -d '' file; do
       fi
     else
       if cp "$file" "$dest" 2>/dev/null; then
-        HASH_INDEX["$hash"]=1
+        [[ -n "$hash" ]] && HASH_INDEX["$hash"]=1
         ((COPIED++)) || true
       else
         echo "Error copying: $file" >&2
@@ -355,8 +361,9 @@ while IFS= read -r -d '' file; do
   fi
 
 done < <(
-  find "${SCAN_ROOTS[@]}" -type f \( "${INAME_FILTER[@]}" \) \
-    "${PRUNE_PATHS[@]}" \
+  find "${SCAN_ROOTS[@]}" \
+    "${PRUNE_EXPR[@]}" \
+    -type f \( "${INAME_FILTER[@]}" \) \
     -print0 2>/dev/null
 )
 
@@ -440,17 +447,19 @@ if ! $NO_ZIP && $HAVE_UNZIP; then
       ((SCANNED++)) || true
       ((ZIP_EXTRACTED++)) || true
 
-      # Compute hash
-      hash=$(sha256_file "$extracted" 2>/dev/null) || {
-        echo "Error hashing extracted: $entry (from $zipfile)" >&2
-        ((ERRORS++)) || true
-        continue
-      }
+      # Compute hash and dedup check only when deduplication is enabled
+      hash=""
+      if $NO_DUPLICATES; then
+        hash=$(sha256_file "$extracted" 2>/dev/null) || {
+          echo "Error hashing extracted: $entry (from $zipfile)" >&2
+          ((ERRORS++)) || true
+          continue
+        }
 
-      # Dedup check
-      if $NO_DUPLICATES && [[ -n "${HASH_INDEX[$hash]+_}" ]]; then
-        ((SKIPPED++)) || true
-        continue
+        if [[ -n "${HASH_INDEX[$hash]+_}" ]]; then
+          ((SKIPPED++)) || true
+          continue
+        fi
       fi
 
       # Get date parts
@@ -486,7 +495,7 @@ if ! $NO_ZIP && $HAVE_UNZIP; then
       else
         mkdir -p "$dest_dir"
         if cp "$extracted" "$dest" 2>/dev/null; then
-          HASH_INDEX["$hash"]=1
+          [[ -n "$hash" ]] && HASH_INDEX["$hash"]=1
           ((COPIED++)) || true
         else
           echo "Error copying extracted: $entry (from $zipfile)" >&2
@@ -499,8 +508,9 @@ if ! $NO_ZIP && $HAVE_UNZIP; then
     rm -rf "$zip_extract_dir"
 
   done < <(
-    find "${SCAN_ROOTS[@]}" -type f -iname "*.zip" \
-      "${PRUNE_PATHS[@]}" \
+    find "${SCAN_ROOTS[@]}" \
+      "${PRUNE_EXPR[@]}" \
+      -type f -iname "*.zip" \
       -print0 2>/dev/null
   )
 
