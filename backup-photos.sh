@@ -265,11 +265,20 @@ for ext in "${EXTENSIONS[@]}"; do
   fi
 done
 
+OUTPUT_ABS=""
+if [[ -n "$OUTPUT" ]]; then
+  output_parent="$(cd -- "$(dirname -- "$OUTPUT")" 2>/dev/null && pwd -P)" || {
+    echo "Error resolving output directory: $OUTPUT" >&2
+    exit 1
+  }
+  OUTPUT_ABS="${output_parent}/$(basename -- "$OUTPUT")"
+fi
+
 while IFS= read -r -d '' file; do
   ((SCANNED++)) || true
 
   # Skip the output directory itself to avoid re-hashing what we just wrote
-  if [[ -n "$OUTPUT" ]] && [[ "$file" == "$OUTPUT"/* ]]; then
+  if [[ -n "$OUTPUT_ABS" ]] && [[ "$file" == "$OUTPUT_ABS" || "$file" == "$OUTPUT_ABS"/* ]]; then
     continue
   fi
 
