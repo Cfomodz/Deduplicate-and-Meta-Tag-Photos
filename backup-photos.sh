@@ -353,9 +353,31 @@ done < <(
 )
 
 # ─── ZIP archive scan ───────────────────────────────────────────────────────
+canonical_path() {
+  local target="$1"
+  if [[ -d "$target" ]]; then
+    (
+      cd "$target" 2>/dev/null && pwd -P
+    )
+  else
+    local parent
+    parent=$(dirname -- "$target")
+    local base
+    base=$(basename -- "$target")
+    (
+      cd "$parent" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$base"
+    )
+  fi
+}
+
 if ! $NO_ZIP && $HAVE_UNZIP; then
   echo ""
   echo "Scanning ZIP archives for images…"
+
+  OUTPUT_ABS=""
+  if [[ -n "$OUTPUT" ]]; then
+    OUTPUT_ABS=$(canonical_path "$OUTPUT")
+  fi
 
   # Create a persistent temp dir for all ZIP extractions (cleaned up at exit)
   ZIP_TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/backup-photos-zip.XXXXXXXXXX")
@@ -363,8 +385,10 @@ if ! $NO_ZIP && $HAVE_UNZIP; then
   trap cleanup_zip_tmp EXIT
 
   while IFS= read -r -d '' zipfile; do
+    zipfile_abs=$(canonical_path "$zipfile")
+
     # Skip ZIPs inside the output directory
-    if [[ -n "$OUTPUT" ]] && [[ "$zipfile" == "$OUTPUT"/* ]]; then
+    if [[ -n "$OUTPUT_ABS" ]] && [[ "$zipfile_abs" == "$OUTPUT_ABS" || "$zipfile_abs" == "$OUTPUT_ABS"/* ]]; then
       continue
     fi
 
