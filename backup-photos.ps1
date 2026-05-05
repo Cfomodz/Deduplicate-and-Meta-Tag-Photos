@@ -178,6 +178,13 @@ function Test-Extension {
     return $Extensions -contains $ext
 }
 
+# ─── Normalise OutputPath to absolute form ───────────────────────────────────
+# Ensures prefix comparisons that exclude the output directory from the scan
+# work correctly even when the caller supplies a relative path (e.g. .\backup).
+if ($OutputPath) {
+    $OutputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
+}
+
 # ─── Build dedup hash index ───────────────────────────────────────────────────
 $HashIndex = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 
