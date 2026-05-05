@@ -267,11 +267,11 @@ done
 
 OUTPUT_ABS=""
 if [[ -n "$OUTPUT" ]]; then
-  output_parent="$(cd -- "$(dirname -- "$OUTPUT")" 2>/dev/null && pwd -P)" || {
+  output_parent="$(cd "$(dirname "$OUTPUT")" 2>/dev/null && pwd -P)" || {
     echo "Error resolving output directory: $OUTPUT" >&2
     exit 1
   }
-  OUTPUT_ABS="${output_parent}/$(basename -- "$OUTPUT")"
+  OUTPUT_ABS="${output_parent}/$(basename "$OUTPUT")"
 fi
 
 while IFS= read -r -d '' file; do
@@ -328,7 +328,7 @@ while IFS= read -r -d '' file; do
   else
     mkdir -p "$dest_dir"
     if $MOVE; then
-      if mv -- "$file" "$dest" 2>/dev/null; then
+      if mv "$file" "$dest" 2>/dev/null; then
         HASH_INDEX["$hash"]=1
         ((COPIED++)) || true
       else
@@ -336,7 +336,7 @@ while IFS= read -r -d '' file; do
         ((ERRORS++)) || true
       fi
     else
-      if cp -- "$file" "$dest" 2>/dev/null; then
+      if cp "$file" "$dest" 2>/dev/null; then
         HASH_INDEX["$hash"]=1
         ((COPIED++)) || true
       else
@@ -361,9 +361,9 @@ canonical_path() {
     )
   else
     local parent
-    parent=$(dirname -- "$target")
+    parent=$(dirname "$target")
     local base
-    base=$(basename -- "$target")
+    base=$(basename "$target")
     (
       cd "$parent" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$base"
     )
@@ -477,7 +477,7 @@ if ! $NO_ZIP && $HAVE_UNZIP; then
         echo "       -> $dest"
       else
         mkdir -p "$dest_dir"
-        if cp -- "$extracted" "$dest" 2>/dev/null; then
+        if cp "$extracted" "$dest" 2>/dev/null; then
           HASH_INDEX["$hash"]=1
           ((COPIED++)) || true
         else
