@@ -94,8 +94,16 @@ EOF
 # ─── Argument parsing ─────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --output)         OUTPUT="$2";          shift 2 ;;
-    --source)         SOURCE="$2";          shift 2 ;;
+    --output)
+      [[ $# -ge 2 ]] || { echo "Error: --output requires a value." >&2; usage; exit 1; }
+      OUTPUT="$2"
+      shift 2
+      ;;
+    --source)
+      [[ $# -ge 2 ]] || { echo "Error: --source requires a value." >&2; usage; exit 1; }
+      SOURCE="$2"
+      shift 2
+      ;;
     --jpg)            FILTER_JPG=true;      shift   ;;
     --png)            FILTER_PNG=true;      shift   ;;
     --no-duplicates)  NO_DUPLICATES=true;   shift   ;;
